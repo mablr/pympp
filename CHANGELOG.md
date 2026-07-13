@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0 (2026-07-13)
+
+### Minor Changes
+
+- Add `hint` field to `PaymentError` problem details. `PaymentRequiredError`, `MalformedCredentialError`, and `PaymentMethodUnsupportedError` now include a default hint pointing users to wallet documentation. (by @bennytimz, [#166](https://github.com/mablr/pympp/pull/166))
+
+### Patch Changes
+
+- Preserved MCP challenge metadata when converting MCP challenges to core payment challenges. (by @bennytimz, [#166](https://github.com/mablr/pympp/pull/166))
+- Handle multipart (`files=`) and streaming bodies on paid 402 retry. Multipart bodies are buffered and replayed identically; async generator bodies raise `PaymentError` before any I/O. (by @bennytimz, [#166](https://github.com/mablr/pympp/pull/166))
+- Fixed MCP payment error detection to support the current MCP SDK's `McpError` shape, where error code and data are nested under an `error` attribute rather than directly on the exception. Added helper functions `_error_code` and `_error_data` to extract these fields from both error shapes. (by @bennytimz, [#166](https://github.com/mablr/pympp/pull/166))
+
 ## 0.9.1 (2026-07-01)
 
 ### Patch Changes
