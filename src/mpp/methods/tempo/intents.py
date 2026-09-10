@@ -5,6 +5,7 @@ Implements the charge intent for Tempo payments.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections.abc import Callable
@@ -29,7 +30,7 @@ from mpp.methods.tempo.schemas import (
     Split,
     TransactionCredentialPayload,
 )
-from mpp.store import Store
+from mpp.store import MemoryStore, Store
 
 if TYPE_CHECKING:
     import httpx
@@ -497,9 +498,10 @@ class ChargeIntent:
             http_client: Optional httpx client for making RPC calls.
                 If provided, the caller is responsible for closing it.
             timeout: Request timeout in seconds (default: 30).
-            store: Optional key-value store for tx hash replay protection.
-                When provided, each verified hash is recorded and subsequent
-                attempts to reuse it are rejected.
+            store: Key-value store for tx hash replay protection. Defaults to
+                an in-memory store capped at 10,000 entries on first settlement.
+                New payments fail at capacity without evicting used hashes. Use a shared persistent
+                store across server replicas and restarts.
             validate_sender: Optional callback invoked when a hash-credential
                 transfer's sender differs from the expected sender; return
                 ``True`` to accept (e.g. smart-account / relayer flows).
@@ -647,6 +649,10 @@ class ChargeIntent:
             VerificationError: If verification fails or the transaction hash
                 was already used.
         """
+        # Defer the default so Mpp can inject its configured shared store.
+        if self._store is None:
+            self._store = MemoryStore(max_entries=10_000)
+
         req, payload = self._prepare_credential(credential, request)
 
         if isinstance(payload, HashCredentialPayload):
@@ -659,7 +665,7 @@ class ChargeIntent:
                     realm=credential.challenge.realm,
                     source=credential.source,
                 )
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 if store_key is not None and self._store is not None:
                     await self._store.delete(store_key)
                 raise
@@ -1102,15 +1108,7 @@ class ChargeIntent:
             reserved_tx_hash = _raw_transaction_hash(raw_tx)
             store_key = f"mpp:charge:{reserved_tx_hash.lower()}"
             if not await self._store.put_if_absent(store_key, reserved_tx_hash):
-                # Already reserved: return the existing receipt without re-broadcasting.
-                receipt_data = await self._fetch_transaction_receipt(client, reserved_tx_hash)
-                self._verify_receipt_transfers(
-                    receipt_data,
-                    request,
-                    challenge_id=challenge_id,
-                    realm=realm,
-                )
-                return Receipt.success(reserved_tx_hash)
+                raise VerificationError("Transaction hash already used")
 
         try:
             # We pay the gas, so when we can faithfully build a simulate payload,
@@ -1133,50 +1131,52 @@ class ChargeIntent:
             )
             response.raise_for_status()
             result = response.json()
-        except Exception:
+
+            if "error" in result:
+                if _is_already_known_transaction_error(result):
+                    tx_hash = reserved_tx_hash or _raw_transaction_hash(raw_tx)
+                    receipt_data = await self._fetch_transaction_receipt(client, tx_hash)
+                    self._verify_receipt_transfers(
+                        receipt_data,
+                        request,
+                        challenge_id=challenge_id,
+                        realm=realm,
+                    )
+                    return Receipt.success(tx_hash)
+
+                raise VerificationError(f"Transaction submission failed: {_rpc_error_msg(result)}")
+
+            receipt_data = result.get("result")
+            if not receipt_data:
+                raise VerificationError("No transaction receipt returned")
+            if not isinstance(receipt_data, dict):
+                raise VerificationError("Invalid transaction receipt")
+
+            self._verify_receipt_transfers(
+                receipt_data,
+                request,
+                challenge_id=challenge_id,
+                realm=realm,
+            )
+
+            receipt_tx_hash = receipt_data.get("transactionHash")
+            if not receipt_tx_hash:
+                raise VerificationError("No transaction hash returned")
+            if not isinstance(receipt_tx_hash, str):
+                raise VerificationError("Invalid transaction hash returned")
+
+            if reserved_tx_hash is not None and receipt_tx_hash.lower() != reserved_tx_hash.lower():
+                raise VerificationError(
+                    "Receipt transaction hash does not match submitted transaction"
+                )
+
+            return Receipt.success(receipt_tx_hash)
+        except (Exception, asyncio.CancelledError):
+            # Only successful verification consumes a payment. Failed or cancelled
+            # attempts must let retries acquire the reservation and verify again.
             if self._store is not None and store_key is not None:
                 await self._store.delete(store_key)
             raise
-
-        if "error" in result:
-            if _is_already_known_transaction_error(result):
-                tx_hash = reserved_tx_hash or _raw_transaction_hash(raw_tx)
-                receipt_data = await self._fetch_transaction_receipt(client, tx_hash)
-                self._verify_receipt_transfers(
-                    receipt_data,
-                    request,
-                    challenge_id=challenge_id,
-                    realm=realm,
-                )
-                return Receipt.success(tx_hash)
-
-            if self._store is not None and store_key is not None:
-                await self._store.delete(store_key)
-            raise VerificationError(f"Transaction submission failed: {_rpc_error_msg(result)}")
-
-        receipt_data = result.get("result")
-        if not receipt_data:
-            raise VerificationError("No transaction receipt returned")
-        if not isinstance(receipt_data, dict):
-            raise VerificationError("Invalid transaction receipt")
-
-        self._verify_receipt_transfers(
-            receipt_data,
-            request,
-            challenge_id=challenge_id,
-            realm=realm,
-        )
-
-        receipt_tx_hash = receipt_data.get("transactionHash")
-        if not receipt_tx_hash:
-            raise VerificationError("No transaction hash returned")
-        if not isinstance(receipt_tx_hash, str):
-            raise VerificationError("Invalid transaction hash returned")
-
-        if reserved_tx_hash is not None and receipt_tx_hash.lower() != reserved_tx_hash.lower():
-            raise VerificationError("Receipt transaction hash does not match submitted transaction")
-
-        return Receipt.success(receipt_tx_hash)
 
     def _cosign_as_fee_payer(
         self, raw_tx: str, fee_token: str | None = None, request: ChargeRequest | None = None
