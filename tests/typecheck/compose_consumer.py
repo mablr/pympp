@@ -10,7 +10,14 @@ from mpp import Challenge, Credential, Receipt
 from mpp.events import ServerPaymentSuccessPayload
 from mpp.methods import CanOfferFn, PaymentSuccessHandler
 from mpp.methods import stripe as stripe_module
-from mpp.methods.stripe import DepositAddresses, MachinePayments, create, spt, stripe
+from mpp.methods.stripe import (
+    DepositAddresses,
+    MachinePayments,
+    PaymentIntentInput,
+    create,
+    spt,
+    stripe,
+)
 from mpp.methods.tempo import ChargeIntent, tempo
 
 
@@ -57,9 +64,17 @@ machine_payments = create(
 assert_type(machine_payments, MachinePayments)
 machine_payments.spt.charge()
 machine_payments.tempo.charge()
+private_options: PaymentIntentInput = {"customer": "cus_test"}
+machine_server = server_api.Mpp.create(
+    methods=machine_payments.default_methods(), realm="example.com", secret_key="secret"
+)
+machine_server.compose(
+    (machine_payments.spt.charge(), {"amount": "0.50", "payment_intent_options": private_options})
+)
 spt(intents={})
 stripe(intents={})
 stripe_module.create(network_id="bn_test", livemode=False, client=stripe_client)
+
 stripe(intents={}, unknown=True)  # pyright: ignore[reportCallIssue]
 server_api.Mpp.create(
     methods=machine_payments.default_methods(), realm="example.com", secret_key="secret"
