@@ -8,11 +8,14 @@ permissions: {}
 
 jobs:
   authorize:
-    if: github.event.label.name == 'cyclops'
     runs-on: ubuntu-latest
+    if: github.event.action == 'labeled' && github.event.label.name == 'cyclops'
     permissions:
       contents: read
+      id-token: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
       - name: Check admin permission
         env:
           GH_TOKEN: ${{ github.token }}
@@ -28,10 +31,11 @@ jobs:
   pr-audit:
     needs: authorize
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
       statuses: write
-    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@dd1014bf8244fded7a501e701cafab240a4f9f0e
+    uses: tempoxyz/gh-actions/.github/workflows/pr-audit.yml@f4bce0ad97405915793348b323cf13d2c054400c
     secrets:
       EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
       EVENTS_CERT: ${{ secrets.EVENTS_CERT }}

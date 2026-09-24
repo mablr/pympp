@@ -1,9 +1,9 @@
 name: Scan GitHub Actions
 
 on:
+  # Required checks must report for every PR, including source-only changes.
   pull_request:
-    paths:
-      - ".github/**"
+  merge_group:
   push:
     branches:
       - main
@@ -18,7 +18,8 @@ permissions: {}
 jobs:
   scan:
     name: Scan GitHub Actions
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@5d3a903b51ce8d1f6d363d1c59d7243ecf80f026
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@f4bce0ad97405915793348b323cf13d2c054400c
     permissions:
       actions: read
       contents: read
+      id-token: write
